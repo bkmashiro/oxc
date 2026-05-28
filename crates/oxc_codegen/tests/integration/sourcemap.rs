@@ -265,55 +265,56 @@ fn synthesized_block_closing_braces_are_mapped() {
         })
         .collect();
 
-    // The emitted `}` after `if (bar) baz();` maps back to the end of `baz();`.
+    // The synthesized block's `}` is mapped (added in #22001). Its end mapping
+    // lands at the generated position just past `}` and points at the inner
+    // statement's exclusive end (the byte after `baz();`).
     assert!(
-        has_mapping(&tokens, pos(2, 9), pos(2, 0)),
-        "expected the synthesized block closing brace to map back to the wrapped if statement",
+        has_mapping(&tokens, pos(2, 10), pos(2, 1)),
+        "expected the synthesized block closing brace to be mapped",
     );
 }
 
-// Both `)` of `factory()()` should map to their own source position
-// at the gen position of the `)`, not one past it.
+// V8 reports the call-site column of a nested/curried call at the position of
+// the *outer* `(` (= the byte right after the inner `)`). The inner call's
+// exclusive-end mapping must land there so the source map resolves V8 stack
+// frames to the correct source column. Regression test for the off-by-one
+// stack-trace columns reported by vitest via vite-ecosystem-ci.
 #[test]
-fn call_end_mapping_lands_at_close_paren() {
+fn nested_call_outer_open_paren_resolves_to_source() {
     let tokens = sourcemap_tokens("factory()()", SourceType::mjs());
-    assert!(has_mapping(&tokens, pos(0, 8), pos(0, 8)), "inner `)`");
-    assert!(has_mapping(&tokens, pos(0, 10), pos(0, 10)), "outer `)`");
+    // Outer `(` is at source col 9; its generated position must map back to it.
+    assert!(has_mapping(&tokens, pos(0, 9), pos(0, 9)), "outer `(` of `factory()()`");
 }
 
-// `print_block_end`: source `}` → gen `}`, not the `;` that follows.
+// Member access after a call (`expect(x).resolves`) is the other shape V8
+// reports at the position right after the inner `)` (the `.`). The exclusive-end
+// mapping of the inner call must cover it.
 #[test]
-fn block_end_mapping_lands_at_close_brace() {
-    let source = "const fn = () => { return 1 }";
-    let src_brace = u32::try_from(source.rfind('}').unwrap()).unwrap();
-    let tokens = sourcemap_tokens(source, SourceType::mjs());
-    assert!(has_mapping(&tokens, pos(0, src_brace), pos(2, 0)));
+fn member_access_after_call_resolves_to_source() {
+    let tokens = sourcemap_tokens("expect(x).resolves", SourceType::mjs());
+    // `.` after `expect(x)` is at source col 9.
+    assert!(has_mapping(&tokens, pos(0, 9), pos(0, 9)), "`.` after `expect(x)`");
 }
 
-// `print_curly_braces` (shared by class body, switch, TS enum/interface/
-// typeliteral/module): pin one to cover the shared helper.
+// Closing delimiters keep their own at-delimiter mapping (matching Babel/TSC),
+// which `v8-to-istanbul` relies on to resolve coverage range boundaries. Each
+// `)`/`}`/`]` source position is mapped, in addition to the exclusive-end
+// mapping past it.
 #[test]
-fn class_body_close_brace_lands_at_close_brace() {
-    let source = "class C { a; }";
-    let src_brace = u32::try_from(source.rfind('}').unwrap()).unwrap();
-    let tokens = sourcemap_tokens(source, SourceType::mjs());
-    assert!(has_mapping(&tokens, pos(0, src_brace), pos(2, 0)));
-}
+fn closing_delimiters_are_mapped() {
+    let assert_delimiter_mapped = |source: &str, delimiter: char| {
+        let col = u32::try_from(source.rfind(delimiter).unwrap()).unwrap();
+        let tokens = sourcemap_tokens(source, SourceType::mjs());
+        assert!(
+            first_generated_position_for_source(&tokens, pos(0, col)).is_some(),
+            "expected source `{delimiter}` at col {col} to be mapped in `{source}`",
+        );
+    };
 
-#[test]
-fn array_close_bracket_lands_at_close_bracket() {
-    let source = "const a = [1, 2]";
-    let src_bracket = u32::try_from(source.rfind(']').unwrap()).unwrap();
-    let tokens = sourcemap_tokens(source, SourceType::mjs());
-    assert!(has_mapping(&tokens, pos(0, src_bracket), pos(0, src_bracket)));
-}
-
-#[test]
-fn object_close_brace_lands_at_close_brace() {
-    let source = "const o = { a: 1 }";
-    let src_brace = u32::try_from(source.rfind('}').unwrap()).unwrap();
-    let tokens = sourcemap_tokens(source, SourceType::mjs());
-    assert!(has_mapping(&tokens, pos(0, src_brace), pos(0, src_brace)));
+    assert_delimiter_mapped("foo(a)", ')');
+    assert_delimiter_mapped("function f() { return 1 }", '}');
+    assert_delimiter_mapped("const a = [1, 2];", ']');
+    assert_delimiter_mapped("const o = { a: 1 };", '}');
 }
 
 #[test]

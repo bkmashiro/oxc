@@ -614,6 +614,7 @@ impl<'a> Codegen<'a> {
         }
         self.add_source_mapping_end(span);
         self.print_ascii_byte(b'}');
+        self.add_source_mapping_after_end(span);
     }
 
     fn print_block_start(&mut self, span: Span) {
@@ -628,6 +629,7 @@ impl<'a> Codegen<'a> {
         self.print_indent();
         self.add_source_mapping_end(span);
         self.print_ascii_byte(b'}');
+        self.add_source_mapping_after_end(span);
     }
 
     fn print_body(&mut self, stmt: &Statement<'_>, need_space: bool, ctx: Context) {
@@ -762,10 +764,9 @@ impl<'a> Codegen<'a> {
         } else {
             self.print_list(arguments, ctx);
         }
-        // End mapping at the gen position OF `)`, not past it. Matches
-        // esbuild/Babel and avoids shadowing the next AST node's start.
         self.add_source_mapping_end(span);
         self.print_ascii_byte(b')');
+        self.add_source_mapping_after_end(span);
     }
 
     fn print_list_with_comments(&mut self, items: &[Argument<'_>], ctx: Context) {
@@ -969,13 +970,15 @@ impl<'a> Codegen<'a> {
     #[expect(clippy::needless_pass_by_ref_mut, clippy::unused_self)]
     fn add_source_mapping(&mut self, _span: Span) {}
 
+    /// Map the closing delimiter character itself (`span.end - 1`, the last
+    /// source byte of the span). Call this *before* printing the delimiter so
+    /// the generated position lands on it. This keeps the `}`/`)`/`]` mapped,
+    /// which `v8-to-istanbul` relies on to resolve coverage range boundaries.
     #[cfg(feature = "sourcemap")]
     fn add_source_mapping_end(&mut self, span: Span) {
         if let Some(sourcemap_builder) = self.sourcemap_builder.as_mut()
             && !span.is_empty()
         {
-            // Map the last source character in the span, not its exclusive end.
-            // Skip the mapping if the emitted closing delimiter has no corresponding source byte.
             let end = span.end - 1;
             if let Some(source_text) = self.source_text {
                 #[expect(clippy::cast_possible_truncation)]
@@ -991,6 +994,35 @@ impl<'a> Codegen<'a> {
     #[inline]
     #[expect(clippy::needless_pass_by_ref_mut, clippy::unused_self)]
     fn add_source_mapping_end(&mut self, _span: Span) {}
+
+    /// Map the position just past the closing delimiter (`span.end`, exclusive).
+    /// Call this *after* printing the delimiter so the generated position lands
+    /// past it, aligning with the start of the next token. V8 reports
+    /// call-/member-frame columns there (the outer `(` in `f(a)(b)`, the `.` in
+    /// `expect(x).resolves`), so this mapping keeps stack traces accurate.
+    ///
+    /// `span.end` may sit at or past the source length when codegen adds
+    /// punctuation (semicolons, newlines) absent from the source; skip those
+    /// positions as they have no corresponding source byte.
+    #[cfg(feature = "sourcemap")]
+    fn add_source_mapping_after_end(&mut self, span: Span) {
+        if let Some(sourcemap_builder) = self.sourcemap_builder.as_mut()
+            && !span.is_empty()
+        {
+            if let Some(source_text) = self.source_text {
+                #[expect(clippy::cast_possible_truncation)]
+                if span.end >= source_text.len() as u32 {
+                    return;
+                }
+            }
+            sourcemap_builder.add_source_mapping(self.code.as_bytes(), span.end, None);
+        }
+    }
+
+    #[cfg(not(feature = "sourcemap"))]
+    #[inline]
+    #[expect(clippy::needless_pass_by_ref_mut, clippy::unused_self)]
+    fn add_source_mapping_after_end(&mut self, _span: Span) {}
 
     #[cfg(feature = "sourcemap")]
     fn add_source_mapping_for_name(&mut self, span: Span, name: &str) {
