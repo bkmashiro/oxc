@@ -455,7 +455,7 @@ impl LanguageServer for Backend {
             // We do not expect multiple changes from the same workspace folder.
             // If we should consider it, we need to map the events to the workers first,
             // to only restart the internal linter / diagnostics for once.
-            // A change can effect multiple workspaces if the file is in a shared location, for example a config file in the home directory.
+            // A change can affect multiple workspaces if the file is in a shared location, for example a config file in the home directory.
             for worker in self.worker_manager.read_workspace_workers().await.iter() {
                 let (diagnostics, registrations, unregistrations) = worker
                     .did_change_watched_files(file_event, &mut needs_diagnostics_refresh, fs)
